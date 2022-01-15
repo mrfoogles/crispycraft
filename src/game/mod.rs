@@ -4,13 +4,13 @@ use wgpu::util::{DeviceExt};
 
 use winit::window::Window;
 
-mod camera;
-
+pub mod camera;
+mod texture;
 
 #[repr(C)]
-#[derive(bytemuck::Pod, bytemuck::Zeroable, Clone, Copy)]
+#[derive(bytemuck::Pod, bytemuck::Zeroable, Clone, Copy, Debug)]
 pub struct Vertex {
-    pos: [f32; 3]
+    pub pos: [f32; 3]
 }
 impl Vertex {
     fn desc<'a>() -> VertexBufferLayout<'a> {
@@ -38,14 +38,15 @@ fn fast_buffer<T: bytemuck::Pod>(device: &Device, data: &[T], usage: BufferUsage
         &wgpu::util::BufferInitDescriptor {
             label: Some(&format!("{:?} Buffer", usage)),
             contents: bytemuck::cast_slice(data),
-            usage: usage,
+            usage,
         }
     );
 }
 
+#[derive(Debug)]
 pub struct CPUMesh {
-    verts: Vec<Vertex>,
-    indxs: Vec<Index>
+    pub verts: Vec<Vertex>,
+    pub indxs: Vec<Index>
 }
 impl CPUMesh {
     fn upload(&self, device: &Device) -> GPUMesh {
@@ -90,12 +91,13 @@ pub struct State {
     pipeline: RenderPipeline,
     gpu_mesh: GPUMesh,
 
-    camera: camera::CameraData,
     camera_buffer: Buffer,
-    camera_group: BindGroup
+    camera_group: BindGroup,
+
+    depth_texture: texture::Texture
 }
 impl State {
-    pub async fn new(window: &Window) -> Self {
+    pub async fn new(window: &Window, mesh: &CPUMesh, camera: &camera::CameraData) -> Self {
         let size = window.inner_size();
 
         let instance = wgpu::Instance::new(wgpu::Backends::all());
@@ -142,16 +144,6 @@ impl State {
                 }
             ]
         });
-        let camera = camera::CameraData {
-            eye: cgmath::point3(0.,0.,-2.),
-            target: cgmath::point3(0.,0.,2.),
-            up: cgmath::vec3(0.,1.,0.),
-
-            aspect: config.width as f32 / config.height as f32,
-            fovy: 70.,
-            znear: 0.1,
-            zfar: 10.
-        };
         let camera_buffer = fast_buffer(&device, &[camera.uniform()], BufferUsages::COPY_DST | BufferUsages::UNIFORM);
         let camera_group = device.create_bind_group(&BindGroupDescriptor {
             label: None,
@@ -190,7 +182,7 @@ impl State {
             },
             fragment: Some(FragmentState {
                 module: &shader,
-                entry_point: &FRAG_ENTRY_POINT,
+                entry_point: FRAG_ENTRY_POINT,
                 targets: &[ColorTargetState {
                     format: config.format,
                     blend: Some(BlendState::REPLACE),
@@ -199,28 +191,22 @@ impl State {
             }),
             primitive: PrimitiveState {
                 front_face: FrontFace::Ccw,
-                cull_mode: None,//Some(Face::Back),
+                cull_mode: Some(Face::Back),
                 ..PrimitiveState::default()
             },
-            depth_stencil: None,
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: texture::Texture::DEPTH_FORMAT,
+                depth_write_enabled: true,
+                depth_compare: wgpu::CompareFunction::Less,
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
             multisample: MultisampleState::default(),
             multiview: None
         });
 
-        let gpu_mesh = CPUMesh {
-            verts: vec![
-                Vertex {
-                    pos: [0.0,0.5,0.0]
-                },
-                Vertex {
-                    pos: [-0.5,-0.5,0.0]
-                },
-                Vertex {
-                    pos: [0.5,-0.5,0.0]
-                },
-            ],
-            indxs: vec![0,1,2]
-        }.upload(&device);
+        let gpu_mesh = mesh.upload(&device);
+        let depth_texture = texture::Texture::create_depth_texture(&device, &config, "depth_texture");
 
         Self {
             surface,
@@ -232,10 +218,15 @@ impl State {
             pipeline,
             gpu_mesh,
 
-            camera,
             camera_buffer,
-            camera_group
+            camera_group,
+
+            depth_texture
         }
+    }
+
+    pub fn update_camera(&mut self, camera: &camera::CameraData) {
+        self.queue.write_buffer(&self.camera_buffer, 0, bytemuck::cast_slice(&[camera.uniform()]));
     }
 
     pub fn resize(&mut self, new_size: winit::dpi::PhysicalSize<u32>) {
@@ -244,6 +235,8 @@ impl State {
             self.config.width = new_size.width;
             self.config.height = new_size.height;
             self.surface.configure(&self.device, &self.config);
+            
+            self.depth_texture = texture::Texture::create_depth_texture(&self.device, &self.config, "depth_texture");
         }
     }
 
@@ -270,7 +263,14 @@ impl State {
                         store: true,
                     },
                 }],
-                depth_stencil_attachment: None // TODO!!!
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &self.depth_texture.view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: true,
+                    }),
+                    stencil_ops: None,
+                }),
             });
 
             pass.set_bind_group(0,&self.camera_group, &[]);

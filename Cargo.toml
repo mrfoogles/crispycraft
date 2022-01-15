@@ -6,7 +6,7 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-building-blocks = "0.7"
+block-mesh = "0.1"
 wgpu = "0.12"
 winit = "0.26"
 winit_input_helper = "0.11"
