@@ -1,9 +1,12 @@
+#![allow(dead_code)]
 use winit::{
     window::{Window,WindowBuilder},
     event::*,
     event_loop::{EventLoop, ControlFlow}
 };
 use winit_input_helper::WinitInputHelper;
+
+mod game;
 
 fn main() {
     let evloop = EventLoop::new();
