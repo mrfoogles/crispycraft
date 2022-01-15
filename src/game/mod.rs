@@ -1,8 +1,11 @@
 #![allow(dead_code)]
 use wgpu::*;
-use wgpu::util::{BufferInitDescriptor, DeviceExt};
+use wgpu::util::{DeviceExt};
 
 use winit::window::Window;
+
+mod camera;
+
 
 #[repr(C)]
 #[derive(bytemuck::Pod, bytemuck::Zeroable, Clone, Copy)]
@@ -19,11 +22,6 @@ impl Vertex {
                 offset: 0,
                 shader_location: 0,
                 format: VertexFormat::Float32x3,
-            },
-            VertexAttribute {
-                offset: std::mem::size_of::<[f32; 3]>() as BufferAddress,
-                shader_location: 1,
-                format: VertexFormat::Float32x3,
             }
             ]
         }
@@ -35,26 +33,24 @@ const INDEX_FORMAT: IndexFormat = IndexFormat::Uint16;
 const VERT_ENTRY_POINT: &str = "vs_main";
 const FRAG_ENTRY_POINT: &str = "fs_main";
 
+fn fast_buffer<T: bytemuck::Pod>(device: &Device, data: &[T], usage: BufferUsages) -> Buffer {
+    return device.create_buffer_init(
+        &wgpu::util::BufferInitDescriptor {
+            label: Some(&format!("{:?} Buffer", usage)),
+            contents: bytemuck::cast_slice(data),
+            usage: usage,
+        }
+    );
+}
+
 pub struct CPUMesh {
     verts: Vec<Vertex>,
     indxs: Vec<Index>
 }
 impl CPUMesh {
     fn upload(&self, device: &Device) -> GPUMesh {
-        let vertbuf = device.create_buffer_init(
-            &wgpu::util::BufferInitDescriptor {
-                label: None,
-                contents: bytemuck::cast_slice(&self.verts),
-                usage: BufferUsages::VERTEX | BufferUsages::COPY_DST,
-            }
-        );
-        let indxbuf = device.create_buffer_init(
-            &wgpu::util::BufferInitDescriptor {
-                label: None,
-                contents: bytemuck::cast_slice(&self.indxs),
-                usage: BufferUsages::INDEX | BufferUsages::COPY_DST,
-            }
-        );
+        let vertbuf = fast_buffer(device, &self.verts, BufferUsages::VERTEX | BufferUsages::COPY_DST);
+        let indxbuf = fast_buffer(device, &self.indxs, BufferUsages::INDEX | BufferUsages::COPY_DST);
 
         return GPUMesh {
             vertbuf,
@@ -92,7 +88,11 @@ pub struct State {
     pub size: winit::dpi::PhysicalSize<u32>,
 
     pipeline: RenderPipeline,
-    gpu_mesh: GPUMesh
+    gpu_mesh: GPUMesh,
+
+    camera: camera::CameraData,
+    camera_buffer: Buffer,
+    camera_group: BindGroup
 }
 impl State {
     pub async fn new(window: &Window) -> Self {
@@ -126,15 +126,58 @@ impl State {
         };
         surface.configure(&device, &config);
 
+        let camera_layout = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
+            label: None,
+            entries: &[
+                // Camera buffer
+                BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: ShaderStages::VERTEX,
+                    ty: BindingType::Buffer {
+                        ty: BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None
+                    },
+                    count: None
+                }
+            ]
+        });
+        let camera = camera::CameraData {
+            eye: cgmath::point3(0.,0.,-2.),
+            target: cgmath::point3(0.,0.,2.),
+            up: cgmath::vec3(0.,1.,0.),
+
+            aspect: config.width as f32 / config.height as f32,
+            fovy: 70.,
+            znear: 0.1,
+            zfar: 10.
+        };
+        let camera_buffer = fast_buffer(&device, &[camera.uniform()], BufferUsages::COPY_DST | BufferUsages::UNIFORM);
+        let camera_group = device.create_bind_group(&BindGroupDescriptor {
+            label: None,
+            layout: &camera_layout,
+            entries: &[
+                BindGroupEntry {
+                    binding: 0,
+                    resource: camera_buffer.as_entire_binding()
+                }
+            ]
+        });
+
         let layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
             label: None,
-            bind_group_layouts: &[],
+            bind_group_layouts: &[&camera_layout],
             push_constant_ranges: &[]
         });
 
+        let shader_text = std::fs::read_to_string(
+            format!("{}/src/shader.wgsl", env!("CARGO_MANIFEST_DIR"))
+        ).unwrap();
         let shader = device.create_shader_module(&ShaderModuleDescriptor {
             label: Some("Shader"),
-            source: ShaderSource::Wgsl(include_str!("./shader.wgsl").into()),
+            source: ShaderSource::Wgsl(
+                (&shader_text).into()
+            ),
         });
 
         let pipeline = device.create_render_pipeline(&RenderPipelineDescriptor {
@@ -187,7 +230,11 @@ impl State {
             size,
 
             pipeline,
-            gpu_mesh
+            gpu_mesh,
+
+            camera,
+            camera_buffer,
+            camera_group
         }
     }
 
@@ -226,6 +273,7 @@ impl State {
                 depth_stencil_attachment: None // TODO!!!
             });
 
+            pass.set_bind_group(0,&self.camera_group, &[]);
             pass.set_pipeline(&self.pipeline);
             draw_mesh(&mut pass, &self.gpu_mesh, 1);
         };

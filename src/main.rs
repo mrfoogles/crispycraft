@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 use winit::{
-    window::{Window,WindowBuilder},
+    window::{WindowBuilder},
     event::*,
     event_loop::{EventLoop, ControlFlow}
 };
