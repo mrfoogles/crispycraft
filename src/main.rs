@@ -16,6 +16,7 @@ fn main() {
     evloop.run(move |main_event, _, control_flow| {
         if input.update(&main_event) {
             // Update
+            window.request_redraw();
         }
 
         match main_event {
@@ -25,6 +26,9 @@ fn main() {
             } if window_id == window.id() => {
                 match window_event {
                     WindowEvent::CloseRequested => { *control_flow = ControlFlow::Exit },
+                    WindowEvent::Resized(new_size) => {
+                        // Resize
+                    },
                     _ => {}
                 }
             },
