@@ -60,13 +60,13 @@ impl TerrainState {
 
         let stage_buffer = GreedyQuadsBuffer::new(chunk.len());
 
-        return Self {
+        Self {
             chunk,
             stage_buffer
         }
     }
 
-    pub fn make_mesh(&mut self, voxel_size: f32) -> CPUMesh {
+    pub fn make_mesh(&mut self, voxel_size: f32) -> CPUMesh<Vertex> {
         let faces = RIGHT_HANDED_Y_UP_CONFIG.faces;
 
         greedy_quads(
@@ -103,6 +103,6 @@ impl TerrainState {
             }
         }
 
-        return mesh
+        mesh
     }
 }

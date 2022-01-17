@@ -1,130 +1,87 @@
-#![allow(dead_code)]
 use wgpu::*;
-use wgpu::util::{DeviceExt};
-
 use winit::window::Window;
 
 pub mod camera;
+
+mod lib;
+pub use lib::types::*;
+pub use lib::util;
 mod texture;
+use texture::Texture;
 
 #[repr(C)]
 #[derive(bytemuck::Pod, bytemuck::Zeroable, Clone, Copy, Debug)]
 pub struct Vertex {
-    pub pos: [f32; 3]
+    pub pos: [f32; 3],
 }
 impl Vertex {
     fn desc<'a>() -> VertexBufferLayout<'a> {
         VertexBufferLayout {
             array_stride: std::mem::size_of::<Self>() as BufferAddress,
             step_mode: VertexStepMode::Vertex,
-            attributes: &[
-            VertexAttribute {
+            attributes: &[VertexAttribute {
                 offset: 0,
                 shader_location: 0,
                 format: VertexFormat::Float32x3,
-            }
-            ]
+            }],
         }
     }
 }
 
-pub type Index = u16;
-const INDEX_FORMAT: IndexFormat = IndexFormat::Uint16;
-const VERT_ENTRY_POINT: &str = "vs_main";
-const FRAG_ENTRY_POINT: &str = "fs_main";
-
-fn fast_buffer<T: bytemuck::Pod>(device: &Device, data: &[T], usage: BufferUsages) -> Buffer {
-    return device.create_buffer_init(
-        &wgpu::util::BufferInitDescriptor {
-            label: Some(&format!("{:?} Buffer", usage)),
-            contents: bytemuck::cast_slice(data),
-            usage,
-        }
-    );
-}
-
-/// The data necessary to make a GPUMesh
-/// Meshes are generated on the CPU, then uploaded to the GPU
-/// ```rust
-/// let world = terrain::TerrainState::new();
-/// let gpu_mesh = world.make_mesh(1.);
-/// // In render()
-/// draw_mesh(&gpu_mesh, ...);
-/// ```
-#[derive(Debug)]
-pub struct CPUMesh {
-    pub verts: Vec<Vertex>,
-    pub indxs: Vec<Index>
-}
-impl CPUMesh {
-    pub fn upload_sized(&self, device: &Device, max_verts: u32, max_indxs: u32) -> GPUMesh {
-        // Pad verts with empty vertices if necessary (you can't make a buffer bigger than the data you put in it)
-        let mut ext_verts = self.verts.clone();
-        if max_verts > self.verts.len() as u32 {
-            ext_verts.extend(std::iter::repeat(Vertex { pos: [0.,0.,0.] }).take(max_verts as usize - ext_verts.len()));
-        }
-
-        // Pad indxs as well
-        let mut ext_indxs = self.indxs.clone();
-        if max_indxs > self.indxs.len() as u32 {
-            ext_indxs.extend(std::iter::repeat(0).take(max_indxs as usize - ext_indxs.len()));
-        }
-
-        let vertbuf = fast_buffer(device, &ext_verts, BufferUsages::VERTEX | BufferUsages::COPY_DST);
-        let indxbuf = fast_buffer(device, &ext_indxs, BufferUsages::INDEX | BufferUsages::COPY_DST);
-
-        return GPUMesh {
-            vertbuf,
-            num_verts: self.verts.len() as u32,
-            max_verts,
-            indxbuf,
-            num_indxs: self.indxs.len() as u32,
-            max_indxs
-        }
-    }
-    pub fn upload(&self, device: &Device) -> GPUMesh {
-        return self.upload_sized(device, self.verts.len() as u32, self.indxs.len() as u32);
+impl BindGroupSource<Buffer> for camera::CameraData {
+    fn bind_group_layout(&self, device: &Device) -> BindGroupLayout {
+        device.create_bind_group_layout(&BindGroupLayoutDescriptor {
+            label: None,
+            entries: &[
+                // Camera buffer
+                BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: ShaderStages::VERTEX,
+                    ty: BindingType::Buffer {
+                        ty: BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+            ],
+        })
     }
 
-    pub fn update_gpu_mesh(&self, gpu_mesh: &mut GPUMesh, queue: &mut Queue) {
-        // TODO: using the max_verts & max_indxs fields, check if this CPUMesh has too many vertices or indices
+    fn bind_group(
+        &self,
+        device: &Device,
+        _queue: &Queue,
+        layout: &BindGroupLayout,
+    ) -> (BindGroup, Buffer) {
+        let buffer = util::fast_buffer(
+            device,
+            &[self.uniform()],
+            BufferUsages::COPY_DST | BufferUsages::UNIFORM,
+        );
+        let group = device.create_bind_group(&BindGroupDescriptor {
+            label: None,
+            layout,
+            entries: &[BindGroupEntry {
+                binding: 0,
+                resource: buffer.as_entire_binding(),
+            }],
+        });
 
-        queue.write_buffer(&gpu_mesh.vertbuf, 0, bytemuck::cast_slice(&self.verts));
-        gpu_mesh.num_verts = self.verts.len() as u32;
-
-        queue.write_buffer(&gpu_mesh.indxbuf, 0, bytemuck::cast_slice(&self.indxs));
-        gpu_mesh.num_indxs = self.indxs.len() as u32;
+        (group, buffer)
     }
-}
 
-/// A reference to the GPU Buffers that hold a mesh
-/// Necessary to render a mesh
-/// ```rust
-/// let gpu_mesh = CPUMesh { verts: todo!(), indxs: todo!() }.upload();
-/// ```
-pub struct GPUMesh {
-    vertbuf: Buffer,
-    num_verts: u32,
-    max_verts: u32,
-
-    indxbuf: Buffer,
-    num_indxs: u32,
-    max_indxs: u32
-}
-
-
-fn draw_mesh<'a,'b: 'a>(pass: &mut RenderPass<'a>, mesh: &'b GPUMesh, instances: u32) {
-    pass.set_vertex_buffer(0,mesh.vertbuf.slice(..));
-    pass.set_index_buffer(mesh.indxbuf.slice(..), INDEX_FORMAT);
-
-    pass.draw_indexed(0..mesh.num_indxs, 0, 0..instances);
+    // Optional to implement
+    fn update_bind_group(&self, data: &Buffer, queue: &Queue) {
+        queue.write_buffer(data, 0, bytemuck::cast_slice(&[self.uniform()]));
+    }
 }
 
 pub struct State {
     /// Used to create resources (buffers, pipelines, etc.) on the GPU
     device: Device,
     /// Used to update some resources (textures, buffers) and to render to the screen
-    queue: Queue,
+    pub queue: Queue,
     /// Used to render to the screen
     surface: Surface,
     /// Used to recreate the Surface on window resize
@@ -136,93 +93,55 @@ pub struct State {
     /// Shaders, general draw config, specs for the vertex buffers, etc.
     pipeline: RenderPipeline,
     /// The chunk mesh
-    gpu_mesh: GPUMesh,
+    pub gpu_mesh: GPUMesh<Vertex>,
 
     /// Camera data on the GPU
-    camera_buffer: Buffer,
+    pub camera_buffer: Buffer,
+    /// Handle on camera data for draw calls
     camera_group: BindGroup,
 
-    depth_texture: texture::Texture
+    depth_texture: Texture,
 }
 impl State {
-    pub async fn new(window: &Window, mesh: &CPUMesh, max_verts: u32, max_indxs: u32, camera: &camera::CameraData) -> Self {
+    pub async fn new(
+        window: &Window,
+        mesh: &CPUMesh<Vertex>,
+        max_verts: u32,
+        max_indxs: u32,
+        camera: &camera::CameraData,
+    ) -> Self {
         let size = window.inner_size();
 
         // Set up a WebGPU context
-        let instance = wgpu::Instance::new(wgpu::Backends::all());
-        let surface = unsafe { instance.create_surface(window) };
-        let adapter = instance.request_adapter(
-            &wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::default(),
-                compatible_surface: Some(&surface),
-                force_fallback_adapter: false,
-            },
-        ).await.unwrap();
-
-        // Get the device and queue with default features
-        let (device, queue) = adapter.request_device(
-            &wgpu::DeviceDescriptor {
-                features: wgpu::Features::empty(),
-                limits: wgpu::Limits::default(),
+        let (surface, config, device, queue) = util::setup_wgpu(
+            window,
+            PowerPreference::default(),
+            DeviceDescriptor {
                 label: None,
+                features: Features::default(),
+                limits: Limits::default(),
             },
-            None, // Trace path
-        ).await.unwrap();
+            PresentMode::Fifo,
+        )
+        .await;
 
-        // Configure the Surface
-        let config = wgpu::SurfaceConfiguration {
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            format: surface.get_preferred_format(&adapter).unwrap(),
-            width: size.width,
-            height: size.height,
-            present_mode: wgpu::PresentMode::Fifo,
-        };
-        surface.configure(&device, &config);
+        // Set up the camera GPU buffer & add the buffer to the pipeline specs
+        let camera_layout = camera.bind_group_layout(&device);
+        let (camera_group, camera_buffer) = camera.bind_group(&device, &queue, &camera_layout);
 
-        // Upload the camera to the GPU & add it to the render specs
-        let camera_layout = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
-            label: None,
-            entries: &[
-                // Camera buffer
-                BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: ShaderStages::VERTEX,
-                    ty: BindingType::Buffer {
-                        ty: BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None
-                    },
-                    count: None
-                }
-            ]
-        });
-        let camera_buffer = fast_buffer(&device, &[camera.uniform()], BufferUsages::COPY_DST | BufferUsages::UNIFORM);
-        let camera_group = device.create_bind_group(&BindGroupDescriptor {
-            label: None,
-            layout: &camera_layout,
-            entries: &[
-                BindGroupEntry {
-                    binding: 0,
-                    resource: camera_buffer.as_entire_binding()
-                }
-            ]
-        });
-
-        // Specs for uniforms & ??? ranges ???
+        // Pipeline specs for uniforms
         let layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
             label: None,
             bind_group_layouts: &[&camera_layout],
-            push_constant_ranges: &[]
+            push_constant_ranges: &[],
         });
 
-        let shader_text = std::fs::read_to_string(
-            format!("{}/src/shader.wgsl", env!("CARGO_MANIFEST_DIR"))
-        ).unwrap();
+        let shader_text =
+            std::fs::read_to_string(format!("{}/src/shader.wgsl", env!("CARGO_MANIFEST_DIR")))
+                .unwrap();
         let shader = device.create_shader_module(&ShaderModuleDescriptor {
             label: Some("Shader"),
-            source: ShaderSource::Wgsl(
-                (&shader_text).into()
-            ),
+            source: ShaderSource::Wgsl((&shader_text).into()),
         });
 
         let pipeline = device.create_render_pipeline(&RenderPipelineDescriptor {
@@ -230,17 +149,17 @@ impl State {
             layout: Some(&layout),
             vertex: VertexState {
                 module: &shader,
-                entry_point: VERT_ENTRY_POINT,
-                buffers: &[Vertex::desc()]
+                entry_point: lib::VERT_ENTRY_POINT,
+                buffers: &[Vertex::desc()],
             },
             fragment: Some(FragmentState {
                 module: &shader,
-                entry_point: FRAG_ENTRY_POINT,
+                entry_point: lib::FRAG_ENTRY_POINT,
                 targets: &[ColorTargetState {
                     format: config.format,
                     blend: Some(BlendState::REPLACE),
-                    write_mask: ColorWrites::ALL
-                }]
+                    write_mask: ColorWrites::ALL,
+                }],
             }),
             primitive: PrimitiveState {
                 front_face: FrontFace::Ccw,
@@ -248,18 +167,18 @@ impl State {
                 ..PrimitiveState::default()
             },
             depth_stencil: Some(wgpu::DepthStencilState {
-                format: texture::Texture::DEPTH_FORMAT,
+                format: Texture::DEPTH_FORMAT,
                 depth_write_enabled: true,
                 depth_compare: wgpu::CompareFunction::Less,
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
             }),
             multisample: MultisampleState::default(),
-            multiview: None
+            multiview: None,
         });
 
         let gpu_mesh = mesh.upload_sized(&device, max_verts, max_indxs);
-        let depth_texture = texture::Texture::create_depth_texture(&device, &config, "depth_texture");
+        let depth_texture = Texture::create_depth_texture(&device, &config, "depth_texture");
 
         Self {
             surface,
@@ -274,15 +193,8 @@ impl State {
             camera_buffer,
             camera_group,
 
-            depth_texture
+            depth_texture,
         }
-    }
-
-    pub fn update_camera(&mut self, camera: &camera::CameraData) {
-        self.queue.write_buffer(&self.camera_buffer, 0, bytemuck::cast_slice(&[camera.uniform()]));
-    }
-    pub fn update_gpu_mesh(&mut self, cpu_mesh: &CPUMesh) {
-        cpu_mesh.update_gpu_mesh(&mut self.gpu_mesh, &mut self.queue);
     }
 
     pub fn resize(&mut self, new_size: winit::dpi::PhysicalSize<u32>) {
@@ -291,20 +203,26 @@ impl State {
             self.config.width = new_size.width;
             self.config.height = new_size.height;
             self.surface.configure(&self.device, &self.config);
-            
-            self.depth_texture = texture::Texture::create_depth_texture(&self.device, &self.config, "depth_texture");
+
+            self.depth_texture =
+                texture::Texture::create_depth_texture(&self.device, &self.config, "depth_texture");
         }
     }
 
     pub fn render(&self) -> Result<(), SurfaceError> {
-        // Get stuff to render to
+        // Get textures to render to
         let output = self.surface.get_current_texture()?;
-        let view = output.texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let view = output
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
 
-        let mut encoder = self.device.create_command_encoder(&CommandEncoderDescriptor {
-            label: None
-        });
+        // Encodes render passes
+        let mut encoder = self
+            .device
+            .create_command_encoder(&CommandEncoderDescriptor { label: None });
+        // You have to drop the pass once you're done with it, so it's in a temporary scope
         {
+            // A render pass is draws some vertices w/ pipeline & bind groups
             let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
                 label: None,
                 color_attachments: &[RenderPassColorAttachment {
@@ -330,17 +248,14 @@ impl State {
                 }),
             });
 
-            // BindGroup is a set of uniforms
-            pass.set_bind_group(0,&self.camera_group, &[]);
-
+            pass.set_bind_group(0, &self.camera_group, &[]);
             pass.set_pipeline(&self.pipeline);
-
-            draw_mesh(&mut pass, &self.gpu_mesh, 1);
+            util::draw_mesh(&mut pass, &self.gpu_mesh, 1);
         };
 
         self.queue.submit(std::iter::once(encoder.finish()));
         output.present();
 
-        return Ok(());
+        Ok(())
     }
 }

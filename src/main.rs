@@ -7,6 +7,7 @@ use winit::{
 use winit_input_helper::WinitInputHelper;
 
 mod game;
+use game::BindGroupSource;
 mod terrain;
 
 fn main() {
@@ -58,7 +59,7 @@ fn main() {
                 camera.eye.x -= sp;
             }
             camera.target = camera.eye + offset;
-            state.update_camera(&camera);
+            camera.update_bind_group(&state.camera_buffer, &state.queue);
 
             // The code renders on the RedrawRequested event, but normally that's only sent once, then on resizes.
             //  this makes it send the RedrawRequested event every frame, as well.
