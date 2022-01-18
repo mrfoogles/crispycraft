@@ -1,11 +1,12 @@
 use block_mesh::ndshape::{ConstShape, ConstShape3u32};
 use block_mesh::{greedy_quads, GreedyQuadsBuffer, MergeVoxel, Voxel, RIGHT_HANDED_Y_UP_CONFIG};
+use std::collections::HashMap;
 
 use crate::game::{Vertex, Index, CPUMesh};
 
 #[derive(Copy, Clone, Eq, PartialEq)]
 pub struct Block {
-    solid: bool
+    pub solid: bool
 }
 
 impl Voxel for Block {
@@ -27,53 +28,40 @@ impl MergeVoxel for Block {
 }
 
 // 16x16x16 with 1-block padding on edges
-pub type ChunkShape = ConstShape3u32<18, 18, 18>;
-
-pub fn generate(chunk: &mut [Block; ChunkShape::SIZE as usize], radius: f32) {
-    for i in 0..ChunkShape::SIZE {
-        let [x, y, z] = ChunkShape::delinearize(i);
-
-        // Generate a sphere? I did not write these 5 lines
-        chunk[i as usize] = if ((x * x + y * y + z * z) as f32).sqrt() < radius {
-            Block { solid: true }
-        } else {
-            Block { solid: false }
-        };
-
-        // Make the padding area empty, so that the algorithm does not cull the faces on the outside
-        if x == 0 || x == 17 || y == 0 || y == 17 || z == 0 || z == 17 {
-            chunk[i as usize] = Block { solid: false }
-        };
-    }
-}
+pub const SIZE: u32 = 16;
+pub type ChunkShape = ConstShape3u32<{SIZE + 2},{SIZE + 2},{SIZE + 2}>;
+pub type ChunkPos = [u16; 3];
+pub type PosHash<T> = std::collections::HashMap<ChunkPos, T>;
 
 pub struct TerrainState {
-    pub chunk: [Block; ChunkShape::SIZE as usize],
+    pub chunks: PosHash<[Block; ChunkShape::SIZE as usize]>,
     stage_buffer: GreedyQuadsBuffer
 }
 impl TerrainState {
     pub fn new() -> Self {
-        // Empty
-        let mut chunk = [Block { solid: false }; ChunkShape::SIZE as usize];
-        // Fill with radius 15. sphere
-        generate(&mut chunk, 15.);
-
-        let stage_buffer = GreedyQuadsBuffer::new(chunk.len());
+        let stage_buffer = GreedyQuadsBuffer::new(ChunkShape::SIZE as usize);
 
         Self {
-            chunk,
+            chunks: HashMap::new(),
             stage_buffer
         }
     }
 
-    pub fn make_mesh(&mut self, voxel_size: f32) -> CPUMesh<Vertex> {
+    pub fn set_chunk<F: Fn([u32; 3]) -> Block>(&mut self, pos: ChunkPos, func: F) {
+        self.chunks.entry(pos).or_insert([Block { solid: false }; ChunkShape::SIZE as usize])
+            .iter_mut().enumerate().for_each(|(i, block)| {
+                *block = func(ChunkShape::delinearize(i as u32));
+            });
+    }
+
+    pub fn make_mesh(&mut self, pos: ChunkPos, voxel_size: f32) -> Option<CPUMesh<Vertex>> {
         let faces = RIGHT_HANDED_Y_UP_CONFIG.faces;
 
         greedy_quads(
-            &self.chunk,
+            self.chunks.get(&pos)?,
             &ChunkShape {},
             [0,0,0], // start (include padding)
-            [17,17,17], // end (include padding)
+            [SIZE+1,SIZE+1,SIZE+1], // end (include padding)
             &faces,
             &mut self.stage_buffer // Don't allocate new memory - just pass the same mutable buffer each time.
         );
@@ -103,6 +91,6 @@ impl TerrainState {
             }
         }
 
-        mesh
+        Some(mesh)
     }
 }

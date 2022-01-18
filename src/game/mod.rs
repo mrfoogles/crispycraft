@@ -9,6 +9,8 @@ pub use lib::util;
 mod texture;
 use texture::Texture;
 
+use crate::terrain;
+
 #[repr(C)]
 #[derive(bytemuck::Pod, bytemuck::Zeroable, Clone, Copy, Debug)]
 pub struct Vertex {
@@ -33,21 +35,21 @@ impl BindGroupSource<Buffer> for camera::CameraData {
         device.create_bind_group_layout(&BindGroupLayoutDescriptor {
             label: None,
             entries: &[
-                // Camera buffer
-                BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: ShaderStages::VERTEX,
-                    ty: BindingType::Buffer {
-                        ty: BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
+            // Camera buffer
+            BindGroupLayoutEntry {
+                binding: 0,
+                visibility: ShaderStages::VERTEX,
+                ty: BindingType::Buffer {
+                    ty: BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
                 },
+                count: None,
+            },
             ],
         })
     }
-
+    
     fn bind_group(
         &self,
         device: &Device,
@@ -67,84 +69,59 @@ impl BindGroupSource<Buffer> for camera::CameraData {
                 resource: buffer.as_entire_binding(),
             }],
         });
-
+        
         (group, buffer)
     }
-
+    
     // Optional to implement
     fn update_bind_group(&self, data: &Buffer, queue: &Queue) {
         queue.write_buffer(data, 0, bytemuck::cast_slice(&[self.uniform()]));
     }
 }
 
-pub struct State {
-    /// Used to create resources (buffers, pipelines, etc.) on the GPU
-    device: Device,
-    /// Used to update some resources (textures, buffers) and to render to the screen
-    pub queue: Queue,
-    /// Used to render to the screen
-    surface: Surface,
-    /// Used to recreate the Surface on window resize
-    config: SurfaceConfiguration,
-    /// Used to call resize() when the size of the window hasn't changed
-    /// (when weird stuff happens)
-    pub size: winit::dpi::PhysicalSize<u32>,
-
+pub struct RenderState {
+    pub ctx: WgpuCtx,
+    
     /// Shaders, general draw config, specs for the vertex buffers, etc.
     pipeline: RenderPipeline,
     /// The chunk mesh
-    pub gpu_mesh: GPUMesh<Vertex>,
-
+    pub chunk_gpu_meshes: terrain::PosHash<GPUMesh<Vertex>>,
+    
     /// Camera data on the GPU
     pub camera_buffer: Buffer,
     /// Handle on camera data for draw calls
     camera_group: BindGroup,
-
+    
     depth_texture: Texture,
 }
-impl State {
+impl RenderState {
     pub async fn new(
         window: &Window,
-        mesh: &CPUMesh<Vertex>,
-        max_verts: u32,
-        max_indxs: u32,
         camera: &camera::CameraData,
     ) -> Self {
-        let size = window.inner_size();
-
         // Set up a WebGPU context
-        let (surface, config, device, queue) = util::setup_wgpu(
-            window,
-            PowerPreference::default(),
-            DeviceDescriptor {
-                label: None,
-                features: Features::default(),
-                limits: Limits::default(),
-            },
-            PresentMode::Fifo,
-        )
-        .await;
-
+        let ctx = WgpuCtx::default(window).await;
+        
         // Set up the camera GPU buffer & add the buffer to the pipeline specs
-        let camera_layout = camera.bind_group_layout(&device);
-        let (camera_group, camera_buffer) = camera.bind_group(&device, &queue, &camera_layout);
-
+        let camera_layout = camera.bind_group_layout(&ctx.device);
+        let (camera_group, camera_buffer) = camera.bind_group(&ctx.device, &ctx.queue, &camera_layout);
+        
         // Pipeline specs for uniforms
-        let layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
+        let layout = ctx.device.create_pipeline_layout(&PipelineLayoutDescriptor {
             label: None,
             bind_group_layouts: &[&camera_layout],
             push_constant_ranges: &[],
         });
-
+        
         let shader_text =
-            std::fs::read_to_string(format!("{}/src/shader.wgsl", env!("CARGO_MANIFEST_DIR")))
-                .unwrap();
-        let shader = device.create_shader_module(&ShaderModuleDescriptor {
+        std::fs::read_to_string(format!("{}/src/shader.wgsl", env!("CARGO_MANIFEST_DIR")))
+        .unwrap();
+        let shader = ctx.device.create_shader_module(&ShaderModuleDescriptor {
             label: Some("Shader"),
             source: ShaderSource::Wgsl((&shader_text).into()),
         });
-
-        let pipeline = device.create_render_pipeline(&RenderPipelineDescriptor {
+        
+        let pipeline = ctx.device.create_render_pipeline(&RenderPipelineDescriptor {
             label: None,
             layout: Some(&layout),
             vertex: VertexState {
@@ -156,7 +133,7 @@ impl State {
                 module: &shader,
                 entry_point: lib::FRAG_ENTRY_POINT,
                 targets: &[ColorTargetState {
-                    format: config.format,
+                    format: ctx.config.format,
                     blend: Some(BlendState::REPLACE),
                     write_mask: ColorWrites::ALL,
                 }],
@@ -176,52 +153,44 @@ impl State {
             multisample: MultisampleState::default(),
             multiview: None,
         });
-
-        let gpu_mesh = mesh.upload_sized(&device, max_verts, max_indxs);
-        let depth_texture = Texture::create_depth_texture(&device, &config, "depth_texture");
-
+        
+        let depth_texture = Texture::create_depth_texture(&ctx.device, &ctx.config, "depth_texture");
+        
         Self {
-            surface,
-            device,
-            queue,
-            config,
-            size,
-
+            ctx,
+            
             pipeline,
-            gpu_mesh,
-
+            chunk_gpu_meshes: terrain::PosHash::new(),
+            
             camera_buffer,
             camera_group,
-
+            
             depth_texture,
         }
     }
-
+    
     pub fn resize(&mut self, new_size: winit::dpi::PhysicalSize<u32>) {
         if new_size.width > 0 && new_size.height > 0 {
-            self.size = new_size;
-            self.config.width = new_size.width;
-            self.config.height = new_size.height;
-            self.surface.configure(&self.device, &self.config);
-
+            self.ctx.resize(new_size);
+            
             self.depth_texture =
-                texture::Texture::create_depth_texture(&self.device, &self.config, "depth_texture");
+            texture::Texture::create_depth_texture(&self.ctx.device, &self.ctx.config, "depth_texture");
         }
     }
-
-    pub fn render(&self) -> Result<(), SurfaceError> {
+    
+    pub fn render<'c>(&self, chunks: Vec<terrain::ChunkPos>) -> Result<(), SurfaceError> {
         // Get textures to render to
-        let output = self.surface.get_current_texture()?;
+        let output = self.ctx.surface.get_current_texture()?;
         let view = output
-            .texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
-
+        .texture
+        .create_view(&wgpu::TextureViewDescriptor::default());
+        
         // Encodes render passes
-        let mut encoder = self
-            .device
-            .create_command_encoder(&CommandEncoderDescriptor { label: None });
+        let mut encoder = self.ctx.device
+        .create_command_encoder(&CommandEncoderDescriptor { label: None });
+
         // You have to drop the pass once you're done with it, so it's in a temporary scope
-        {
+        for pos in chunks {
             // A render pass is draws some vertices w/ pipeline & bind groups
             let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
                 label: None,
@@ -247,15 +216,21 @@ impl State {
                     stencil_ops: None,
                 }),
             });
-
+            
             pass.set_bind_group(0, &self.camera_group, &[]);
             pass.set_pipeline(&self.pipeline);
-            util::draw_mesh(&mut pass, &self.gpu_mesh, 1);
+            
+            match self.chunk_gpu_meshes.get(&pos) {
+                Some(mesh) => {
+                    util::draw_mesh(&mut pass, mesh, 1);
+                },
+                None => {}
+            }
         };
-
-        self.queue.submit(std::iter::once(encoder.finish()));
+        
+        self.ctx.queue.submit(std::iter::once(encoder.finish()));
         output.present();
-
+        
         Ok(())
     }
 }

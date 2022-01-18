@@ -100,6 +100,84 @@ pub mod types {
         #[allow(unused_variables)]
         fn update_bind_group(&self, data: &DATA, queue: &Queue) {}
     }
+
+    pub struct WgpuCtx {
+        /// Used to create resources (buffers, pipelines, etc.) on the GPU
+        pub device: Device,
+        /// Used to update some resources (textures, buffers) and to render to the screen
+        pub queue: Queue,
+        /// Used to render to the screen
+        pub surface: Surface,
+        /// Used to recreate the Surface on window resize
+        pub config: SurfaceConfiguration,
+        /// Used to call resize() when the size of the window hasn't changed
+        /// (when weird stuff happens)
+        pub size: winit::dpi::PhysicalSize<u32>,
+    }
+    impl WgpuCtx {
+        pub async fn new(
+            window: &winit::window::Window,
+            power_pref: PowerPreference,
+            device_desc: DeviceDescriptor<'_>,
+            present_mode: PresentMode,
+        ) -> Self {
+            let size = window.inner_size();
+    
+            let instance = wgpu::Instance::new(wgpu::Backends::all());
+            let surface = unsafe { instance.create_surface(window) };
+            let adapter = instance
+                .request_adapter(&wgpu::RequestAdapterOptions {
+                    power_preference: power_pref,
+                    compatible_surface: Some(&surface),
+                    force_fallback_adapter: false,
+                })
+                .await
+                .unwrap();
+    
+            let (device, queue) = adapter
+                .request_device(
+                    &device_desc,
+                    None, // Trace path
+                )
+                .await
+                .unwrap();
+    
+            let config = wgpu::SurfaceConfiguration {
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                format: surface.get_preferred_format(&adapter).unwrap(),
+                width: size.width,
+                height: size.height,
+                present_mode: present_mode,
+            };
+            surface.configure(&device, &config);
+    
+            Self {
+                device, queue, surface, config, size
+            }
+        }
+
+        pub async fn default(window: &winit::window::Window) -> Self {
+            Self::new(
+                window,
+                PowerPreference::default(),
+                DeviceDescriptor {
+                    label: None,
+                    features: Features::default(),
+                    limits: Limits::default()
+                },
+                PresentMode::Fifo
+            ).await
+        }
+
+        pub fn resize(&mut self, new_size: winit::dpi::PhysicalSize<u32>) {
+            if new_size.width > 0 && new_size.height > 0 {
+                self.size = new_size;
+                self.config.width = new_size.width;
+                self.config.height = new_size.height;
+                self.surface.configure(&self.device, &self.config);
+            }
+        }
+    }
 }
 
 pub mod util {
@@ -128,44 +206,5 @@ pub mod util {
         pass.set_index_buffer(mesh.indxbuf.slice(..), INDEX_FORMAT);
 
         pass.draw_indexed(0..mesh.num_indxs, 0, 0..instances);
-    }
-
-    pub async fn setup_wgpu(
-        window: &winit::window::Window,
-        power_pref: PowerPreference,
-        device_desc: DeviceDescriptor<'_>,
-        present_mode: PresentMode,
-    ) -> (Surface, SurfaceConfiguration, Device, Queue) {
-        let size = window.inner_size();
-
-        let instance = wgpu::Instance::new(wgpu::Backends::all());
-        let surface = unsafe { instance.create_surface(window) };
-        let adapter = instance
-            .request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: power_pref,
-                compatible_surface: Some(&surface),
-                force_fallback_adapter: false,
-            })
-            .await
-            .unwrap();
-
-        let (device, queue) = adapter
-            .request_device(
-                &device_desc,
-                None, // Trace path
-            )
-            .await
-            .unwrap();
-
-        let config = wgpu::SurfaceConfiguration {
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            format: surface.get_preferred_format(&adapter).unwrap(),
-            width: size.width,
-            height: size.height,
-            present_mode: present_mode,
-        };
-        surface.configure(&device, &config);
-
-        (surface, config, device, queue)
     }
 }

@@ -34,13 +34,36 @@ fn main() {
         zfar: 40.
     };
 
-    let wrl_mesh = world.make_mesh(1.);
+
+    let generate = |[x,y,z]: [u32; 3]| {
+        use terrain::{Block,SIZE};
+
+        if x == 0 || x == 17 || y == 0 || y == 17 || z == 0 || z == 17 {
+            return Block { solid: false }
+        };
+
+        let h = ((x as f32 + z as f32) / 5.).sin() * (SIZE as f32 / 2.) + (SIZE as f32 / 2.);
+
+        if (y as f32) < h {
+            Block { solid: true }
+        } else {
+            Block { solid: false }
+        }
+    };
+    let wrl_mesh = world.make_mesh([0,0,0], 1.)
+        .unwrap_or_else(|| { 
+            world.set_chunk([0,0,0], generate); 
+            world.make_mesh([0,0,0], 1.).unwrap() 
+        });
 
     const MAX_FACES: u32 = 16 * 16 * 16 * 6 / 2;
     const MAX_VERTS: u32 = MAX_FACES * 4; // four points
     const MAX_INDXS: u32 = MAX_FACES * 6; // two triangles(3) from the points
     // State requires an initial mesh - uploading a mesh requires MAX_VERTS & MAX_INDXS becuase you can't resize buffers
-    let mut state = pollster::block_on(game::State::new(&window, &wrl_mesh, MAX_VERTS / 8, MAX_INDXS / 8, &camera));
+    let mut state = pollster::block_on(game::RenderState::new(&window, &camera));
+    state.chunk_gpu_meshes.insert([0,0,0], 
+        wrl_mesh.upload_sized(&state.ctx.device, MAX_VERTS, MAX_INDXS)
+    );
 
     evloop.run(move |main_event, _, control_flow| {
         // Input also checks for some special events, which is why we update only when it says so
@@ -59,7 +82,7 @@ fn main() {
                 camera.eye.x -= sp;
             }
             camera.target = camera.eye + offset;
-            camera.update_bind_group(&state.camera_buffer, &state.queue);
+            camera.update_bind_group(&state.camera_buffer, &state.ctx.queue);
 
             // The code renders on the RedrawRequested event, but normally that's only sent once, then on resizes.
             //  this makes it send the RedrawRequested event every frame, as well.
@@ -83,10 +106,10 @@ fn main() {
             },
             // Let the OS request us to re-render whenever it needs to
             Event::RedrawRequested(window_id) if window_id == window.id() => {
-                match state.render() {
+                match state.render(vec![[0,0,0]]) {
                     Ok(_) => {}
                     // Reconfigure the surface if lost
-                    Err(wgpu::SurfaceError::Lost) => state.resize(state.size),
+                    Err(wgpu::SurfaceError::Lost) => state.resize(state.ctx.size),
                     // The system is out of memory, we should probably quit
                     Err(wgpu::SurfaceError::OutOfMemory) => *control_flow = ControlFlow::Exit,
                     // All other errors (Outdated, Timeout) should be resolved by the next frame
