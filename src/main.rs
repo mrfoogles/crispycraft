@@ -11,6 +11,8 @@ use game::BindGroupSource;
 mod terrain;
 use terrain::ChunkPos;
 
+use block_mesh::ndshape::ConstShape;
+
 fn main() {
     let evloop = EventLoop::new();
 
@@ -51,10 +53,6 @@ fn main() {
         }
     };
 
-    const MAX_FACES: u32 = 16 * 16 * 16 * 6 / 2;
-    const MAX_VERTS: u32 = MAX_FACES * 4; // four points
-    const MAX_INDXS: u32 = MAX_FACES * 6; // two triangles(3) from the points
-
     fn make_mesh<F: Fn(ChunkPos, ChunkPos) -> terrain::Block>(
         world: &mut terrain::TerrainState, 
         ctx: &mut game::WgpuCtx,
@@ -62,17 +60,16 @@ fn main() {
         pos: terrain::ChunkPos,
         generator: F
     ) {
-        let cpu_mesh = world.make_mesh(pos, 1.)
-            .unwrap_or_else(|| { 
-                world.set_chunk(pos, generator); 
-                world.make_mesh(pos, 1.).unwrap() 
-            });
-        renderer.chunk_gpu_meshes.insert(pos, 
-            cpu_mesh.upload_sized(&ctx.device, MAX_VERTS, MAX_INDXS)
+        world.set_chunk(pos, generator);
+        renderer.cache_chunk_mesh(
+            &ctx, pos, 
+            &terrain::ChunkShape {}, 
+            world.chunks.get(&pos).unwrap(), 
+            terrain::SIZE, 1.
         );
     }
 
-    let mut chunk_r = game::ChunkRender::new(&ctx, &camera);
+    let mut chunk_r = game::ChunkRender::new(&ctx, &camera, terrain::ChunkShape::SIZE as usize);
     let chunks = (-2..2).flat_map(|x| {
         (-2..2).map(|z| {
             [x as i32, 0, z as i32]

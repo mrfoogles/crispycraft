@@ -1,3 +1,6 @@
+use wgpu::*;
+use super::lib::types::BindGroupSource;
+use super::lib::util::fast_buffer;
 
 #[rustfmt::skip]
 const OPENGL_TO_WGPU_MATRIX: cgmath::Matrix4<f32> = cgmath::Matrix4::new(
@@ -33,5 +36,54 @@ impl CameraData {
         CameraUniform {
             transform: self.build_transform().into()
         }
+    }
+}
+
+impl BindGroupSource<Buffer> for CameraData {
+    fn bind_group_layout(&self, device: &Device) -> BindGroupLayout {
+        device.create_bind_group_layout(&BindGroupLayoutDescriptor {
+            label: None,
+            entries: &[
+            // Camera buffer
+            BindGroupLayoutEntry {
+                binding: 0,
+                visibility: ShaderStages::VERTEX,
+                ty: BindingType::Buffer {
+                    ty: BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            ],
+        })
+    }
+    
+    fn bind_group(
+        &self,
+        device: &Device,
+        _queue: &Queue,
+        layout: &BindGroupLayout,
+    ) -> (BindGroup, Buffer) {
+        let buffer = fast_buffer(
+            device,
+            &[self.uniform()],
+            BufferUsages::COPY_DST | BufferUsages::UNIFORM,
+        );
+        let group = device.create_bind_group(&BindGroupDescriptor {
+            label: None,
+            layout,
+            entries: &[BindGroupEntry {
+                binding: 0,
+                resource: buffer.as_entire_binding(),
+            }],
+        });
+        
+        (group, buffer)
+    }
+    
+    // Optional to implement
+    fn update_bind_group(&self, data: &Buffer, queue: &Queue) {
+        queue.write_buffer(data, 0, bytemuck::cast_slice(&[self.uniform()]));
     }
 }

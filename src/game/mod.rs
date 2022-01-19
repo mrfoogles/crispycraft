@@ -1,7 +1,9 @@
 use wgpu::*;
-use winit::window::Window;
+use block_mesh::ndshape::{ConstShape};
+use block_mesh::{greedy_quads, GreedyQuadsBuffer, MergeVoxel, RIGHT_HANDED_Y_UP_CONFIG};
 
 pub mod camera;
+use camera::CameraData;
 
 mod lib;
 pub use lib::types::*;
@@ -30,65 +32,18 @@ impl Vertex {
     }
 }
 
-impl BindGroupSource<Buffer> for camera::CameraData {
-    fn bind_group_layout(&self, device: &Device) -> BindGroupLayout {
-        device.create_bind_group_layout(&BindGroupLayoutDescriptor {
-            label: None,
-            entries: &[
-            // Camera buffer
-            BindGroupLayoutEntry {
-                binding: 0,
-                visibility: ShaderStages::VERTEX,
-                ty: BindingType::Buffer {
-                    ty: BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            },
-            ],
-        })
-    }
-    
-    fn bind_group(
-        &self,
-        device: &Device,
-        _queue: &Queue,
-        layout: &BindGroupLayout,
-    ) -> (BindGroup, Buffer) {
-        let buffer = util::fast_buffer(
-            device,
-            &[self.uniform()],
-            BufferUsages::COPY_DST | BufferUsages::UNIFORM,
-        );
-        let group = device.create_bind_group(&BindGroupDescriptor {
-            label: None,
-            layout,
-            entries: &[BindGroupEntry {
-                binding: 0,
-                resource: buffer.as_entire_binding(),
-            }],
-        });
-        
-        (group, buffer)
-    }
-    
-    // Optional to implement
-    fn update_bind_group(&self, data: &Buffer, queue: &Queue) {
-        queue.write_buffer(data, 0, bytemuck::cast_slice(&[self.uniform()]));
-    }
-}
-
 pub struct ChunkRender {
     /// Shaders, general draw config, specs for the vertex buffers, etc.
     pipeline: RenderPipeline,
     /// The chunk mesh
     pub chunk_gpu_meshes: terrain::PosHash<GPUMesh<Vertex>>,
+    stage_buffer: GreedyQuadsBuffer
 }
 impl ChunkRender {
     pub fn new(
         ctx: &WgpuCtx,
-        camera: &camera::CameraData,
+        camera: &CameraData,
+        voxels: usize
     ) -> Self {
         // Pipeline specs for uniforms
         let layout = ctx.device.create_pipeline_layout(&PipelineLayoutDescriptor {
@@ -141,9 +96,69 @@ impl ChunkRender {
         Self {
             pipeline,
             chunk_gpu_meshes: terrain::PosHash::new(),
+            stage_buffer: GreedyQuadsBuffer::new(voxels)
         }
     }
     
+    pub fn cache_chunk_mesh<B: MergeVoxel, SH: ConstShape<u32, 3>>(
+        &mut self, 
+        ctx: &WgpuCtx,
+        pos: terrain::ChunkPos,
+        shape: &SH,
+        data: &[B], 
+        size: u32,
+        voxel_size: f32
+    ) {
+        let faces = RIGHT_HANDED_Y_UP_CONFIG.faces;
+
+        greedy_quads(
+            data,
+            shape,
+            [0,0,0], // start (include padding)
+            [size+1,size+1,size+1], // end (include padding)
+            &faces,
+            &mut self.stage_buffer // Don't allocate new memory - just pass the same mutable buffer each time.
+        );
+
+        let mut mesh = CPUMesh {
+            verts: vec![],
+            indxs: vec![]
+        };
+        // For each face of a cube
+        for i in 0..6 {
+            // OrientedBlockFace are used to make a quad(rectangle) face a certain way.
+            let face = faces[i];
+            let quads = &self.stage_buffer.quads.groups[i];
+
+            for quad in quads.iter() {
+                // Get data
+                let verts = face.quad_mesh_positions(quad, voxel_size);
+                let indxs = face.quad_mesh_indices(mesh.verts.len() as u32);
+
+                // Convert to the right format
+                for vert in verts {
+                    mesh.verts.push(Vertex { pos: [
+                        vert[0] + pos[0] as f32 * size as f32,
+                        vert[1] + pos[1] as f32 * size as f32,
+                        vert[2] + pos[2] as f32 * size as f32
+                    ] });
+                }
+                for indx in indxs {
+                    mesh.indxs.push(indx as Index);
+                }
+            }
+        }
+
+        const MAX_FACES: u32 = 16 * 16 * 16 * 6 / 2;
+        const MAX_VERTS: u32 = MAX_FACES * 4; // four points
+        const MAX_INDXS: u32 = MAX_FACES * 6; // two triangles(3) from the points
+
+        self.chunk_gpu_meshes.insert(
+            pos,
+            mesh.upload_sized(&ctx.device, MAX_VERTS, MAX_INDXS)
+        );
+    }
+
     pub fn render<'c>(&self, ctx: &WgpuCtx, depth_texture: &Texture, camera_group: &BindGroup, chunks: &[terrain::ChunkPos]) -> Result<(), SurfaceError> {
         // Get textures to render to
         let output = ctx.surface.get_current_texture()?;
