@@ -178,7 +178,7 @@ impl RenderState {
         }
     }
     
-    pub fn render<'c>(&self, chunks: Vec<terrain::ChunkPos>) -> Result<(), SurfaceError> {
+    pub fn render<'c>(&self, chunks: &[terrain::ChunkPos]) -> Result<(), SurfaceError> {
         // Get textures to render to
         let output = self.ctx.surface.get_current_texture()?;
         let view = output
@@ -221,7 +221,7 @@ impl RenderState {
             pass.set_pipeline(&self.pipeline);
             
             for pos in chunks {
-                match self.chunk_gpu_meshes.get(&pos) {
+                match self.chunk_gpu_meshes.get(pos) {
                     Some(mesh) => {
                         util::draw_mesh(&mut pass, mesh, 1);
                     },

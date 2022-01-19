@@ -9,6 +9,7 @@ use winit_input_helper::WinitInputHelper;
 mod game;
 use game::BindGroupSource;
 mod terrain;
+use terrain::ChunkPos;
 
 fn main() {
     let evloop = EventLoop::new();
@@ -31,52 +32,50 @@ fn main() {
         aspect: wsize.width as f32 / wsize.height as f32,
         fovy: 70.,
         znear: 0.1,
-        zfar: 40.
+        zfar: 400.
     };
 
-    let generate = |[lx,ly,lz]: [u32; 3], [x,y,z]: [u32; 3]| {
+    let generate = |[lx,ly,lz]: [i32; 3], [x,y,z]: [i32; 3]| {
         use terrain::{Block,SIZE};
 
         if lx == 0 || lx == 17 || ly == 0 || ly == 17 || lz == 0 || lz == 17 {
             return Block { solid: false }
         };
 
-        if (y as f32) < (x as f32 / 16.).sin() * (z as f32 / 4.) + 5. {
+        if (y as f32) < (x as f32 / 16. + z as f32 / 8.).sin() * 8. + 8. {
             Block { solid: true }
         } else {
             Block { solid: false }
         }
     };
-    let wrl_mesh = world.make_mesh([0,0,0], 1.)
-        .unwrap_or_else(|| { 
-            world.set_chunk([0,0,0], generate); 
-            world.make_mesh([0,0,0], 1.).unwrap() 
-        });
-    let wrl_mesh2 = world.make_mesh([1,0,0], 1.)
-        .unwrap_or_else(|| { 
-            world.set_chunk([1,0,0], generate); 
-            world.make_mesh([1,0,0], 1.).unwrap() 
-        });
-    let wrl_mesh3 = world.make_mesh([0,0,1], 1.)
-        .unwrap_or_else(|| { 
-            world.set_chunk([0,0,1], generate); 
-            world.make_mesh([0,0,1], 1.).unwrap() 
-        });
 
     const MAX_FACES: u32 = 16 * 16 * 16 * 6 / 2;
     const MAX_VERTS: u32 = MAX_FACES * 4; // four points
     const MAX_INDXS: u32 = MAX_FACES * 6; // two triangles(3) from the points
-    // State requires an initial mesh - uploading a mesh requires MAX_VERTS & MAX_INDXS becuase you can't resize buffers
+
+    fn make_mesh<F: Fn(ChunkPos, ChunkPos) -> terrain::Block>(
+        world: &mut terrain::TerrainState, 
+        renderer: &mut game::RenderState, 
+        pos: terrain::ChunkPos, 
+        generator: F
+    ) {
+        let cpu_mesh = world.make_mesh(pos, 1.)
+            .unwrap_or_else(|| { 
+                world.set_chunk(pos, generator); 
+                world.make_mesh(pos, 1.).unwrap() 
+            });
+        renderer.chunk_gpu_meshes.insert(pos, 
+            cpu_mesh.upload_sized(&renderer.ctx.device, MAX_VERTS, MAX_INDXS)
+        );
+    }
+
     let mut state = pollster::block_on(game::RenderState::new(&window, &camera));
-    state.chunk_gpu_meshes.insert([0,0,0], 
-        wrl_mesh.upload_sized(&state.ctx.device, MAX_VERTS, MAX_INDXS)
-    );
-    state.chunk_gpu_meshes.insert([1,0,0], 
-        wrl_mesh2.upload_sized(&state.ctx.device, MAX_VERTS, MAX_INDXS)
-    );
-    state.chunk_gpu_meshes.insert([0,0,1], 
-        wrl_mesh3.upload_sized(&state.ctx.device, MAX_VERTS, MAX_INDXS)
-    );
+    let chunks = (-2..2).flat_map(|x| {
+        (-2..2).map(|z| {
+            [x as i32, 0, z as i32]
+        }).collect::<Vec<terrain::ChunkPos>>()
+    }).collect::<Vec<terrain::ChunkPos>>();
+    for chunk in chunks.iter() { make_mesh(&mut world, &mut state, *chunk, generate); }
 
     evloop.run(move |main_event, _, control_flow| {
         // Input also checks for some special events, which is why we update only when it says so
@@ -119,7 +118,7 @@ fn main() {
             },
             // Let the OS request us to re-render whenever it needs to
             Event::RedrawRequested(window_id) if window_id == window.id() => {
-                match state.render(vec![[0,0,0], [1,0,0], [0,0,1]]) {
+                match state.render(&chunks) {
                     Ok(_) => {}
                     // Reconfigure the surface if lost
                     Err(wgpu::SurfaceError::Lost) => state.resize(state.ctx.size),

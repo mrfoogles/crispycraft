@@ -30,7 +30,7 @@ impl MergeVoxel for Block {
 // 16x16x16 with 1-block padding on edges
 pub const SIZE: u32 = 16;
 pub type ChunkShape = ConstShape3u32<{SIZE + 2},{SIZE + 2},{SIZE + 2}>;
-pub type ChunkPos = [u32; 3];
+pub type ChunkPos = [i32; 3];
 pub type PosHash<T> = std::collections::HashMap<ChunkPos, T>;
 
 pub struct TerrainState {
@@ -47,14 +47,14 @@ impl TerrainState {
         }
     }
 
-    pub fn set_chunk<F: Fn([u32; 3], [u32; 3]) -> Block>(&mut self, pos: ChunkPos, func: F) {
+    pub fn set_chunk<F: Fn([i32; 3], [i32; 3]) -> Block>(&mut self, pos: ChunkPos, func: F) {
         self.chunks.entry(pos).or_insert([Block { solid: false }; ChunkShape::SIZE as usize])
             .iter_mut().enumerate().for_each(|(i, block)| {
                 let local = ChunkShape::delinearize(i as u32);
-                *block = func(local, [
-                    local[0] + pos[0] * SIZE,
-                    local[1] + pos[1] * SIZE,
-                    local[2] + pos[2] * SIZE
+                *block = func([local[0] as i32, local[1] as i32, local[2] as i32], [
+                    local[0] as i32 + pos[0] * SIZE as i32,
+                    local[1] as i32 + pos[1] * SIZE as i32,
+                    local[2] as i32 + pos[2] * SIZE as i32
                 ]);
             });
     }
