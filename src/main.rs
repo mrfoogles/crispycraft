@@ -34,17 +34,14 @@ fn main() {
         zfar: 40.
     };
 
-
-    let generate = |[x,y,z]: [u32; 3]| {
+    let generate = |[lx,ly,lz]: [u32; 3], [x,y,z]: [u32; 3]| {
         use terrain::{Block,SIZE};
 
-        if x == 0 || x == 17 || y == 0 || y == 17 || z == 0 || z == 17 {
+        if lx == 0 || lx == 17 || ly == 0 || ly == 17 || lz == 0 || lz == 17 {
             return Block { solid: false }
         };
 
-        let h = ((x as f32 + z as f32) / 5.).sin() * (SIZE as f32 / 2.) + (SIZE as f32 / 2.);
-
-        if (y as f32) < h {
+        if (y as f32) < (x as f32 / 16.).sin() * (z as f32 / 4.) + 5. {
             Block { solid: true }
         } else {
             Block { solid: false }
@@ -55,6 +52,16 @@ fn main() {
             world.set_chunk([0,0,0], generate); 
             world.make_mesh([0,0,0], 1.).unwrap() 
         });
+    let wrl_mesh2 = world.make_mesh([1,0,0], 1.)
+        .unwrap_or_else(|| { 
+            world.set_chunk([1,0,0], generate); 
+            world.make_mesh([1,0,0], 1.).unwrap() 
+        });
+    let wrl_mesh3 = world.make_mesh([0,0,1], 1.)
+        .unwrap_or_else(|| { 
+            world.set_chunk([0,0,1], generate); 
+            world.make_mesh([0,0,1], 1.).unwrap() 
+        });
 
     const MAX_FACES: u32 = 16 * 16 * 16 * 6 / 2;
     const MAX_VERTS: u32 = MAX_FACES * 4; // four points
@@ -63,6 +70,12 @@ fn main() {
     let mut state = pollster::block_on(game::RenderState::new(&window, &camera));
     state.chunk_gpu_meshes.insert([0,0,0], 
         wrl_mesh.upload_sized(&state.ctx.device, MAX_VERTS, MAX_INDXS)
+    );
+    state.chunk_gpu_meshes.insert([1,0,0], 
+        wrl_mesh2.upload_sized(&state.ctx.device, MAX_VERTS, MAX_INDXS)
+    );
+    state.chunk_gpu_meshes.insert([0,0,1], 
+        wrl_mesh3.upload_sized(&state.ctx.device, MAX_VERTS, MAX_INDXS)
     );
 
     evloop.run(move |main_event, _, control_flow| {
@@ -106,7 +119,7 @@ fn main() {
             },
             // Let the OS request us to re-render whenever it needs to
             Event::RedrawRequested(window_id) if window_id == window.id() => {
-                match state.render(vec![[0,0,0]]) {
+                match state.render(vec![[0,0,0], [1,0,0], [0,0,1]]) {
                     Ok(_) => {}
                     // Reconfigure the surface if lost
                     Err(wgpu::SurfaceError::Lost) => state.resize(state.ctx.size),

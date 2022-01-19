@@ -190,7 +190,7 @@ impl RenderState {
         .create_command_encoder(&CommandEncoderDescriptor { label: None });
 
         // You have to drop the pass once you're done with it, so it's in a temporary scope
-        for pos in chunks {
+        {
             // A render pass is draws some vertices w/ pipeline & bind groups
             let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
                 label: None,
@@ -220,14 +220,16 @@ impl RenderState {
             pass.set_bind_group(0, &self.camera_group, &[]);
             pass.set_pipeline(&self.pipeline);
             
-            match self.chunk_gpu_meshes.get(&pos) {
-                Some(mesh) => {
-                    util::draw_mesh(&mut pass, mesh, 1);
-                },
-                None => {}
+            for pos in chunks {
+                match self.chunk_gpu_meshes.get(&pos) {
+                    Some(mesh) => {
+                        util::draw_mesh(&mut pass, mesh, 1);
+                    },
+                    None => { panic!("Mesh not set - {:?}", pos) }
+                }
             }
         };
-        
+
         self.ctx.queue.submit(std::iter::once(encoder.finish()));
         output.present();
         
