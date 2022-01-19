@@ -18,6 +18,8 @@ fn main() {
         .build(&evloop).unwrap();
     let wsize = window.inner_size();
 
+    let mut ctx = pollster::block_on(game::WgpuCtx::default(&window));
+
     // has methods like .key_held(VirtualKeyCode::W)
     let mut input = WinitInputHelper::new();
 
@@ -55,8 +57,9 @@ fn main() {
 
     fn make_mesh<F: Fn(ChunkPos, ChunkPos) -> terrain::Block>(
         world: &mut terrain::TerrainState, 
-        renderer: &mut game::RenderState, 
-        pos: terrain::ChunkPos, 
+        ctx: &mut game::WgpuCtx,
+        renderer: &mut game::ChunkRender,
+        pos: terrain::ChunkPos,
         generator: F
     ) {
         let cpu_mesh = world.make_mesh(pos, 1.)
@@ -65,17 +68,20 @@ fn main() {
                 world.make_mesh(pos, 1.).unwrap() 
             });
         renderer.chunk_gpu_meshes.insert(pos, 
-            cpu_mesh.upload_sized(&renderer.ctx.device, MAX_VERTS, MAX_INDXS)
+            cpu_mesh.upload_sized(&ctx.device, MAX_VERTS, MAX_INDXS)
         );
     }
 
-    let mut state = pollster::block_on(game::RenderState::new(&window, &camera));
+    let mut chunk_r = game::ChunkRender::new(&ctx, &camera);
     let chunks = (-2..2).flat_map(|x| {
         (-2..2).map(|z| {
             [x as i32, 0, z as i32]
         }).collect::<Vec<terrain::ChunkPos>>()
     }).collect::<Vec<terrain::ChunkPos>>();
-    for chunk in chunks.iter() { make_mesh(&mut world, &mut state, *chunk, generate); }
+    for chunk in chunks.iter() { make_mesh(&mut world, &mut ctx, &mut chunk_r, *chunk, generate); }
+
+    let (camera_group, camera_buffer) = camera.bind_group(&ctx.device, &ctx.queue, &camera.bind_group_layout(&ctx.device));
+    let mut depth_texture = game::texture::Texture::create_depth_texture(&ctx.device, &ctx.config, "depth tex");
 
     evloop.run(move |main_event, _, control_flow| {
         // Input also checks for some special events, which is why we update only when it says so
@@ -94,7 +100,7 @@ fn main() {
                 camera.eye.x -= sp;
             }
             camera.target = camera.eye + offset;
-            camera.update_bind_group(&state.camera_buffer, &state.ctx.queue);
+            camera.update_bind_group(&camera_buffer, &ctx.queue);
 
             // The code renders on the RedrawRequested event, but normally that's only sent once, then on resizes.
             //  this makes it send the RedrawRequested event every frame, as well.
@@ -111,17 +117,21 @@ fn main() {
                     WindowEvent::CloseRequested => { *control_flow = ControlFlow::Exit },
                     // Resize correctly
                     WindowEvent::Resized(new_size) => {
-                        state.resize(new_size);
+                        ctx.resize(new_size);
+                        depth_texture = game::texture::Texture::create_depth_texture(&ctx.device, &ctx.config, "depth tex");
                     },
                     _ => {}
                 }
             },
             // Let the OS request us to re-render whenever it needs to
             Event::RedrawRequested(window_id) if window_id == window.id() => {
-                match state.render(&chunks) {
+                match chunk_r.render(&ctx, &depth_texture, &camera_group, &chunks) {
                     Ok(_) => {}
                     // Reconfigure the surface if lost
-                    Err(wgpu::SurfaceError::Lost) => state.resize(state.ctx.size),
+                    Err(wgpu::SurfaceError::Lost) => {
+                        ctx.resize(ctx.size);
+                        depth_texture = game::texture::Texture::create_depth_texture(&ctx.device, &ctx.config, "depth tex");
+                    },
                     // The system is out of memory, we should probably quit
                     Err(wgpu::SurfaceError::OutOfMemory) => *control_flow = ControlFlow::Exit,
                     // All other errors (Outdated, Timeout) should be resolved by the next frame

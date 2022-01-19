@@ -6,7 +6,7 @@ pub mod camera;
 mod lib;
 pub use lib::types::*;
 pub use lib::util;
-mod texture;
+pub mod texture;
 use texture::Texture;
 
 use crate::terrain;
@@ -79,37 +79,21 @@ impl BindGroupSource<Buffer> for camera::CameraData {
     }
 }
 
-pub struct RenderState {
-    pub ctx: WgpuCtx,
-    
+pub struct ChunkRender {
     /// Shaders, general draw config, specs for the vertex buffers, etc.
     pipeline: RenderPipeline,
     /// The chunk mesh
     pub chunk_gpu_meshes: terrain::PosHash<GPUMesh<Vertex>>,
-    
-    /// Camera data on the GPU
-    pub camera_buffer: Buffer,
-    /// Handle on camera data for draw calls
-    camera_group: BindGroup,
-    
-    depth_texture: Texture,
 }
-impl RenderState {
-    pub async fn new(
-        window: &Window,
+impl ChunkRender {
+    pub fn new(
+        ctx: &WgpuCtx,
         camera: &camera::CameraData,
     ) -> Self {
-        // Set up a WebGPU context
-        let ctx = WgpuCtx::default(window).await;
-        
-        // Set up the camera GPU buffer & add the buffer to the pipeline specs
-        let camera_layout = camera.bind_group_layout(&ctx.device);
-        let (camera_group, camera_buffer) = camera.bind_group(&ctx.device, &ctx.queue, &camera_layout);
-        
         // Pipeline specs for uniforms
         let layout = ctx.device.create_pipeline_layout(&PipelineLayoutDescriptor {
             label: None,
-            bind_group_layouts: &[&camera_layout],
+            bind_group_layouts: &[&camera.bind_group_layout(&ctx.device)],
             push_constant_ranges: &[],
         });
         
@@ -154,39 +138,21 @@ impl RenderState {
             multiview: None,
         });
         
-        let depth_texture = Texture::create_depth_texture(&ctx.device, &ctx.config, "depth_texture");
-        
         Self {
-            ctx,
-            
             pipeline,
             chunk_gpu_meshes: terrain::PosHash::new(),
-            
-            camera_buffer,
-            camera_group,
-            
-            depth_texture,
         }
     }
     
-    pub fn resize(&mut self, new_size: winit::dpi::PhysicalSize<u32>) {
-        if new_size.width > 0 && new_size.height > 0 {
-            self.ctx.resize(new_size);
-            
-            self.depth_texture =
-            texture::Texture::create_depth_texture(&self.ctx.device, &self.ctx.config, "depth_texture");
-        }
-    }
-    
-    pub fn render<'c>(&self, chunks: &[terrain::ChunkPos]) -> Result<(), SurfaceError> {
+    pub fn render<'c>(&self, ctx: &WgpuCtx, depth_texture: &Texture, camera_group: &BindGroup, chunks: &[terrain::ChunkPos]) -> Result<(), SurfaceError> {
         // Get textures to render to
-        let output = self.ctx.surface.get_current_texture()?;
+        let output = ctx.surface.get_current_texture()?;
         let view = output
         .texture
         .create_view(&wgpu::TextureViewDescriptor::default());
         
         // Encodes render passes
-        let mut encoder = self.ctx.device
+        let mut encoder = ctx.device
         .create_command_encoder(&CommandEncoderDescriptor { label: None });
 
         // You have to drop the pass once you're done with it, so it's in a temporary scope
@@ -208,7 +174,7 @@ impl RenderState {
                     },
                 }],
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: &self.depth_texture.view,
+                    view: &depth_texture.view,
                     depth_ops: Some(wgpu::Operations {
                         load: wgpu::LoadOp::Clear(1.0),
                         store: true,
@@ -217,7 +183,7 @@ impl RenderState {
                 }),
             });
             
-            pass.set_bind_group(0, &self.camera_group, &[]);
+            pass.set_bind_group(0, camera_group, &[]);
             pass.set_pipeline(&self.pipeline);
             
             for pos in chunks {
@@ -230,7 +196,7 @@ impl RenderState {
             }
         };
 
-        self.ctx.queue.submit(std::iter::once(encoder.finish()));
+        ctx.queue.submit(std::iter::once(encoder.finish()));
         output.present();
         
         Ok(())
